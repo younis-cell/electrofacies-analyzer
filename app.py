@@ -11,7 +11,7 @@ import io
 st.set_page_config(page_title="Zubair Multi-Well Electrofacies Suite", layout="wide")
 
 st.title("🛢️ Zubair Multi-Well Electrofacies & Petrophysical Suite")
-st.write("منصة أكاديمية متقدمة لدمج وتحليل آبار الحقل معاً، توحيد تصنيف السحنات، وحسابات رسالة الماجستير.")
+st.write("منصة أكاديمية متقدمة لدمج وتحليل آبار الحقل معاً، توحيد تصنيف السحنات، وتحديد نطاق الأعماق لرسالة الماجستير.")
 
 st.sidebar.header("📁 إدارة ورفع الآبار")
 uploaded_files = st.file_uploader("اختر ملفات الـ LAS الخاصة بالآبار (ارفع عدة آبار معاً)", type=["las"], accept_multiple_files=True)
@@ -21,7 +21,6 @@ formation_name = st.sidebar.text_input("اسم التكوين الجيولوجي
 if uploaded_files:
     all_wells_data = []
     
-    # 1. قراءة كافة ملفات الآبار وجمعها
     for uploaded_file in uploaded_files:
         well_name = uploaded_file.name.split('.')[0]
         with tempfile.NamedTemporaryFile(delete=False, suffix='.las') as tmp:
@@ -45,10 +44,9 @@ if uploaded_files:
             st.error(f"خطأ في قراءة ملف البئر {well_name}: {e}")
             
     if all_wells_data:
-        # 2. دمج كافة بيانات الآبار في قاعدة بيانات واحدة ضخمة
         master_df = pd.concat(all_wells_data, ignore_index=True)
         
-        # 3. حساب الخصائص البتروفيزيائية لكل الآبار معاً
+        # حساب الخصائص البتروفيزيائية لكل الآبار معاً
         if 'GR' in master_df.columns:
             gr_clean = master_df['GR'].quantile(0.05)
             gr_shale = master_df['GR'].quantile(0.95)
@@ -72,7 +70,6 @@ if uploaded_files:
             
         all_processed_logs = [col for col in master_df.columns if col not in ['MD', 'DEPT', 'Well_Name']]
         
-        # 4. إعدادات التصنيف الموحد لكل الآبار دفعة واحدة
         st.sidebar.markdown("---")
         st.sidebar.subheader("⚙️ التصنيف الموحد للسحنات (K-Means)")
         n_clusters = st.sidebar.slider("عدد السحنات الكهربائية الموحدة (K):", min_value=2, max_value=8, value=5)
@@ -83,17 +80,14 @@ if uploaded_files:
         if len(selected_features) < 2:
             st.warning("⚠️ يرجى اختيار مجسين على الأقل لتنفيذ التصنيف.")
         else:
-            # تجهيز مصفوفة التدريب المدمجة لكل الآبار معاً
             valid_idx = master_df.dropna(subset=selected_features).index
             
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(master_df.loc[valid_idx, selected_features])
             
-            # تطبيق K-Means على بيانات كل الآبار مجتمعة في نموذج واحد موحد
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             cluster_results = kmeans.fit_predict(X_scaled)
             
-            # إسناد النتائج للجدول الشامل
             master_df['Electrofacies'] = np.nan
             master_df.loc[valid_idx, 'Electrofacies'] = cluster_results + 1
             
@@ -114,14 +108,23 @@ if uploaded_files:
             
             master_df['Facies_Name'] = master_df['Electrofacies'].map(facies_names)
             
-            # --- اختيار بئر للاستعراض المرئي ---
+            # --- اختيار البئر ونطاق العمق المخصص له ---
             st.sidebar.markdown("---")
-            st.sidebar.subheader("📊 استعراض البئر الفردي")
+            st.sidebar.subheader("📊 استعراض البئر وتحديد نطاق العمق")
             wells_list = master_df['Well_Name'].unique().tolist()
-            selected_well = st.sidebar.selectbox("اختر البئر لعرض لوحة المسارات الخاصة به:", options=wells_list)
+            selected_well = st.sidebar.selectbox("اختر البئر لعرضه:", options=wells_list)
             
             depth_col_name = 'MD' if 'MD' in master_df.columns else 'DEPT'
-            single_well_df = master_df[master_df['Well_Name'] == selected_well].sort_values(by=depth_col_name)
+            well_raw_df = master_df[master_df['Well_Name'] == selected_well]
+            
+            well_min_d = float(well_raw_df[depth_col_name].min())
+            well_max_d = float(well_raw_df[depth_col_name].max())
+            
+            # إعادة تفعيل مربعات إدخال العمق لكل بئر بدقة
+            min_depth = st.sidebar.number_input("العمق الأدنى للبئر (متر):", value=well_min_d)
+            max_depth = st.sidebar.number_input("العمق الأقصى للبئر (متر):", value=well_max_d)
+            
+            single_well_df = well_raw_df[(well_raw_df[depth_col_name] >= min_depth) & (well_raw_df[depth_col_name] <= max_depth)].sort_values(by=depth_col_name)
             
             default_tracks = [t for t in ['GR', 'VSH', 'PHID'] if t in single_well_df.columns]
             chosen_tracks = st.sidebar.multiselect("اختر المجسات المراد عرضها في لوحة المسارات:", options=all_processed_logs, default=default_tracks)
@@ -137,8 +140,10 @@ if uploaded_files:
             with tab1:
                 if len(chosen_tracks) == 0:
                     st.warning("⚠️ يرجى اختيار مسار واحد على الأقل.")
+                elif len(single_well_df) == 0:
+                    st.warning("⚠️ لا توجد بيانات ضمن نطاق العمق المحدد لهذا البئر!")
                 else:
-                    st.info(f"📍 لوحة المسارات للبئر: **{selected_well}** (بناءً على التصنيف الموحد لكل آبار الحقل)")
+                    st.info(f"📍 لوحة المسارات للبئر: **{selected_well}** ضمن العمق ({min_depth} - {max_depth} متر)")
                     col1, col2 = st.columns([1.3, 1])
                     
                     with col1:
@@ -154,7 +159,6 @@ if uploaded_files:
                             axes[idx].set_title(track, fontsize=9, fontweight='bold')
                             axes[idx].grid(True, linestyle='--', alpha=0.5)
                             
-                        # مسار السحنات الملون المتصل للبئر المحدد بناءً على التصنيف الموحد
                         facies_ax_idx = len(chosen_tracks)
                         ax_f = axes[facies_ax_idx]
                         depths = d.values
