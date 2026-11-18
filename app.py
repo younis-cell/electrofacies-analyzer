@@ -18,54 +18,52 @@ uploaded_files = st.sidebar.file_uploader("ارفع ملفات الـ LAS الخ
 
 formation_name = st.sidebar.text_input("اسم التكوين الجيولوجي:", value="Zubair Formation")
 
-if uploaded_files:
-    all_wells_data = []
-    
-    for uploaded_file in uploaded_files:
-        well_name = uploaded_file.name.split('.')[0]
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.las') as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
-            
-        try:
-            las = lasio.read(tmp_path)
-            df = las.df().reset_index()
-            
-            # توحيد اسم عمق العمق
-            depth_col = 'MD' if 'MD' in df.columns else ('DEPT' if 'DEPT' in df.columns else df.columns[0])
-            df = df.rename(columns={depth_col: 'MD'})
-            df['MD'] = pd.to_numeric(df['MD'], errors='coerce')
-            
-            # توحيد أسماء الأعمدة الكبيرة
-            df.columns = [str(c).upper().strip() for c in df.columns]
-            
-            df['WELL_NAME'] = well_name
-            all_wells_data.append(df)
-        except Exception as e:
-            st.error(f"خطأ في قراءة البئر {well_name}: {e}")
-            
-    if all_wells_data:
-        master_df = pd.concat(all_wells_data, ignore_index=True)
-        
-        # التأكد من وجود أعمدة افتراضية إن لم تكن موجودة
-        if 'VSH' not in master_df.columns:
-            master_df['VSH'] = np.nan
-        if 'PHID' not in master_df.columns:
-            master_df['PHID'] = np.nan
-        if 'SW' not in master_df.columns:
-            master_df['SW'] = np.nan
-        if 'ELECTROFACIES' not in master_df.columns:
-            master_df['ELECTROFACIES'] = np.nan
-            master_df['FACIES_NAME'] = "Unclassified"
+# تهيئة Session State لحفظ البيانات لكي لا تختفي عند إعادة التحميل
+if 'master_df' not in st.session_state:
+    st.session_state.master_df = None
 
-        # استخراج قائمة المجسات المتاحة (استبعاد الأعمدة النصية والأساسية)
+if uploaded_files:
+    # قراءة الملفات فقط إذا لم يتم تحميلها مسبقاً أو إذا تغيرت الملفات
+    if st.session_state.master_df is None:
+        all_wells_data = []
+        for uploaded_file in uploaded_files:
+            well_name = uploaded_file.name.split('.')[0]
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.las') as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_path = tmp.name
+                
+            try:
+                las = lasio.read(tmp_path)
+                df = las.df().reset_index()
+                depth_col = 'MD' if 'MD' in df.columns else ('DEPT' if 'DEPT' in df.columns else df.columns[0])
+                df = df.rename(columns={depth_col: 'MD'})
+                df['MD'] = pd.to_numeric(df['MD'], errors='coerce')
+                df.columns = [str(c).upper().strip() for c in df.columns]
+                df['WELL_NAME'] = well_name
+                all_wells_data.append(df)
+            except Exception as e:
+                st.error(f"خطأ في قراءة البئر {well_name}: {e}")
+                
+        if all_wells_data:
+            st.session_state.master_df = pd.concat(all_wells_data, ignore_index=True)
+            if 'VSH' not in st.session_state.master_df.columns:
+                st.session_state.master_df['VSH'] = np.nan
+            if 'PHID' not in st.session_state.master_df.columns:
+                st.session_state.master_df['PHID'] = np.nan
+            if 'SW' not in st.session_state.master_df.columns:
+                st.session_state.master_df['SW'] = np.nan
+            if 'ELECTROFACIES' not in st.session_state.master_df.columns:
+                st.session_state.master_df['ELECTROFACIES'] = np.nan
+                st.session_state.master_df['FACIES_NAME'] = "Unclassified"
+
+    if st.session_state.master_df is not None:
+        master_df = st.session_state.master_df
         exclude_cols = ['MD', 'WELL_NAME', 'ELECTROFACIES', 'FACIES_NAME']
         available_logs = [col for col in master_df.columns if col not in exclude_cols]
         
         st.sidebar.markdown("---")
         st.sidebar.header("🛠️ لوحة التحكم والتحليل اليدوي")
         
-        # اختيار البئر النطاق
         wells_list = master_df['WELL_NAME'].unique().tolist()
         selected_well = st.sidebar.selectbox("اختر البئر للاستعراض:", options=wells_list)
         
@@ -101,6 +99,7 @@ if uploaded_files:
                 rt_safe = master_df[res_col].replace(0, 1)
                 sw = np.power((1.0 * rw_val) / (np.power(phid_safe, 2.0) * rt_safe), 0.5)
                 master_df['SW'] = sw.clip(0, 1)
+            st.session_state.master_df = master_df
             st.sidebar.success("✅ تمت الحسابات بنجاح!")
 
         current_logs = [col for col in master_df.columns if col not in exclude_cols]
@@ -140,9 +139,10 @@ if uploaded_files:
                         
                     master_df['ELECTROFACIES'] = np.nan
                     master_df.loc[valid_idx, 'ELECTROFACIES'] = preds
-                    st.sidebar.success(f"✅ تم التصنيف بنجاح!")
+                    st.session_state.master_df = master_df
+                    st.sidebar.success(f"✅ تم التصنيف وحفظ النتائج بنجاح!")
 
-        # تخصيص الألوان والأسماء
+        # تسمية السحنات والألوان
         st.sidebar.markdown("---")
         st.sidebar.subheader("3️⃣ تسمية السحنات والألوان")
         facies_names = {}
@@ -157,6 +157,7 @@ if uploaded_files:
             
         if 'ELECTROFACIES' in master_df.columns:
             master_df['FACIES_NAME'] = master_df['ELECTROFACIES'].map(facies_names)
+            st.session_state.master_df = master_df
 
         # التبويبات
         tab1, tab2, tab3, tab4 = st.tabs(["📊 لوحة المسارات", "📉 الرسوم التقاطعية", "📐 التحقق الرياضي (Elbow)", "📥 تصدير النتائج"])
@@ -166,7 +167,7 @@ if uploaded_files:
         with tab1:
             st.subheader(f"لوحة المسارات للبئر: {selected_well}")
             default_tr = [t for t in ['GR', 'VSH', 'PHID'] if t in current_logs]
-            chosen_tracks = st.multiselect("اختر المجسات للعرض:", options=current_logs, default=default_tr)
+            chosen_tracks = st.multiselect("اختر المجسات للعرض:", options=current_logs, default=default_tr, key="chosen_tracks_tab1")
             
             if len(chosen_tracks) == 0:
                 st.warning("⚠️ اختر مساراً واحداً على الأقل للعرض.")
@@ -211,7 +212,7 @@ if uploaded_files:
                     fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
                     buf.seek(0)
                     st.pyplot(fig)
-                    st.download_button("📥 تحميل لوحة المسارات (300 DPI)", data=buf, file_name=f"{selected_well}_Track.png", mime="image/png")
+                    st.download_button("📥 تحميل لوحة المسارات (300 DPI)", data=buf, file_name=f"{selected_well}_Track.png", mime="image/png", key="dl_track")
                     
                 with col2:
                     st.subheader("📋 إحصائيات السحنات")
@@ -231,8 +232,8 @@ if uploaded_files:
         with tab2:
             st.subheader("📉 الرسوم التقاطعية التفاعلية (Crossplot)")
             if len(current_logs) >= 2:
-                cp_x = st.selectbox("محور (X):", options=current_logs, index=0)
-                cp_y = st.selectbox("محور (Y):", options=current_logs, index=1)
+                cp_x = st.selectbox("محور (X):", options=current_logs, index=0, key="cp_x")
+                cp_y = st.selectbox("محور (Y):", options=current_logs, index=1, key="cp_y")
                 
                 fig_cp, ax_cp = plt.subplots(figsize=(8, 6))
                 if 'ELECTROFACIES' in master_df.columns and master_df['ELECTROFACIES'].notna().sum() > 0:
@@ -255,11 +256,11 @@ if uploaded_files:
                 fig_cp.savefig(buf_cp, format="png", dpi=300, bbox_inches='tight')
                 buf_cp.seek(0)
                 st.pyplot(fig_cp)
-                st.download_button("📥 تحميل الرسم التقاطعي (300 DPI)", data=buf_cp, file_name="Crossplot.png", mime="image/png")
+                st.download_button("📥 تحميل الرسم التقاطعي (300 DPI)", data=buf_cp, file_name="Crossplot.png", mime="image/png", key="dl_cp")
 
         with tab3:
             st.subheader("📐 البرهان الرياضي لاختيار عدد السحنات (Elbow Method)")
-            if st.button("حساب منحنى Elbow"):
+            if st.button("حساب منحنى Elbow", key="btn_elbow"):
                 valid_idx = master_df.dropna(subset=default_feats).index
                 if len(valid_idx) > 0:
                     scaler = StandardScaler()
@@ -282,5 +283,5 @@ if uploaded_files:
         with tab4:
             st.subheader("📥 تصدير النتائج")
             csv_data = master_df.to_csv(index=False).encode('utf-8')
-            st.download_button("تحميل جدول النتائج الشامل (CSV)", data=csv_data, file_name=f"{formation_name}_Results.csv", mime="text/csv")
+            st.download_button("تحميل جدول النتائج الشامل (CSV)", data=csv_data, file_name=f"{formation_name}_Results.csv", mime="text/csv", key="dl_csv")
             st.dataframe(master_df.head(100), use_container_width=True)
