@@ -11,11 +11,10 @@ import io
 
 st.set_page_config(page_title="Zubair Electrofacies Suite", layout="wide")
 
-# واجهة نظيفة ومباشرة بدون نصوص طويلة
 st.title("🛢️ Zubair Electrofacies & Petrophysical Suite")
 
 st.sidebar.header("📁 رفع بيانات الآبار")
-uploaded_files = st.sidebar.file_uploader("ارفع ملفات الـ LAS الخاصة بالآبار هنا:", type=["las"], accept_multiple_files=True)
+uploaded_files = st.sidebar.file_uploader("ارفع ملفات الـ LAS الخاصة بالآبار:", type=["las"], accept_multiple_files=True)
 
 formation_name = st.sidebar.text_input("اسم التكوين الجيولوجي:", value="Zubair Formation")
 
@@ -32,62 +31,68 @@ if uploaded_files:
             las = lasio.read(tmp_path)
             df = las.df().reset_index()
             
-            depth_col = 'MD' if 'MD' in df.columns else 'DEPT'
-            df[depth_col] = pd.to_numeric(df[depth_col], errors='coerce')
+            # توحيد اسم عمق العمق
+            depth_col = 'MD' if 'MD' in df.columns else ('DEPT' if 'DEPT' in df.columns else df.columns[0])
+            df = df.rename(columns={depth_col: 'MD'})
+            df['MD'] = pd.to_numeric(df['MD'], errors='coerce')
             
-            available_logs = [col for col in df.columns if col != depth_col]
-            for col in available_logs:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-            df['Well_Name'] = well_name
+            # توحيد أسماء الأعمدة الكبيرة
+            df.columns = [str(c).upper().strip() for c in df.columns]
+            
+            df['WELL_NAME'] = well_name
             all_wells_data.append(df)
         except Exception as e:
             st.error(f"خطأ في قراءة البئر {well_name}: {e}")
             
     if all_wells_data:
         master_df = pd.concat(all_wells_data, ignore_index=True)
-        all_processed_logs = [col for col in master_df.columns if col not in ['MD', 'DEPT', 'Well_Name', 'Electrofacies', 'Facies_Name', 'Sw', 'VSH', 'PHID']]
+        
+        # التأكد من وجود أعمدة افتراضية إن لم تكن موجودة
+        if 'VSH' not in master_df.columns:
+            master_df['VSH'] = np.nan
+        if 'PHID' not in master_df.columns:
+            master_df['PHID'] = np.nan
+        if 'SW' not in master_df.columns:
+            master_df['SW'] = np.nan
+        if 'ELECTROFACIES' not in master_df.columns:
+            master_df['ELECTROFACIES'] = np.nan
+            master_df['FACIES_NAME'] = "Unclassified"
+
+        # استخراج قائمة المجسات المتاحة (استبعاد الأعمدة النصية والأساسية)
+        exclude_cols = ['MD', 'WELL_NAME', 'ELECTROFACIES', 'FACIES_NAME']
+        available_logs = [col for col in master_df.columns if col not in exclude_cols]
         
         st.sidebar.markdown("---")
-        st.sidebar.header("🛠️ لوحة التحكم والتحليل")
+        st.sidebar.header("🛠️ لوحة التحكم والتحليل اليدوي")
         
-        # اختيار البئر ونطاق العمق
-        wells_list = master_df['Well_Name'].unique().tolist()
+        # اختيار البئر النطاق
+        wells_list = master_df['WELL_NAME'].unique().tolist()
         selected_well = st.sidebar.selectbox("اختر البئر للاستعراض:", options=wells_list)
         
-        depth_col_name = 'MD' if 'MD' in master_df.columns else 'DEPT'
-        well_raw_df = master_df[master_df['Well_Name'] == selected_well]
-        
-        well_min_d = float(well_raw_df[depth_col_name].min())
-        well_max_d = float(well_raw_df[depth_col_name].max())
+        well_raw_df = master_df[master_df['WELL_NAME'] == selected_well]
+        well_min_d = float(well_raw_df['MD'].min()) if not well_raw_df['MD'].isna().all() else 0.0
+        well_max_d = float(well_raw_df['MD'].max()) if not well_raw_df['MD'].isna().all() else 1000.0
         
         min_depth = st.sidebar.number_input("العمق الأدنى (متر):", value=well_min_d)
         max_depth = st.sidebar.number_input("العمق الأقصى (متر):", value=well_max_d)
         
         st.sidebar.markdown("---")
-        st.sidebar.subheader("1️⃣ الحسابات البتروفيزيائية الأساسية")
-        compute_petro = st.sidebar.button("تنفيذ الحسابات (VSH, PHID, Sw)")
-        
-        if 'VSH' not in master_df.columns:
-            master_df['VSH'] = np.nan
-        if 'PHID' not in master_df.columns:
-            master_df['PHID'] = np.nan
-        if 'Sw' not in master_df.columns:
-            master_df['Sw'] = np.nan
-            
+        st.sidebar.subheader("1️⃣ الحسابات البتروفيزيائية")
         rw_val = st.sidebar.slider("مقاومة ماء التكوين (Rw):", 0.01, 0.1, 0.03, 0.01)
+        compute_petro = st.sidebar.button("تنفيذ الحسابات (VSH, PHID, Sw)")
         
         if compute_petro:
             if 'GR' in master_df.columns:
                 gr_clean = master_df['GR'].quantile(0.05)
                 gr_shale = master_df['GR'].quantile(0.95)
-                igr = (master_df['GR'] - gr_clean) / (gr_shale - gr_clean)
-                master_df['VSH'] = (0.083 * (np.power(2, 2 * igr) - 1)).clip(0, 1)
+                if gr_shale != gr_clean:
+                    igr = (master_df['GR'] - gr_clean) / (gr_shale - gr_clean)
+                    master_df['VSH'] = (0.083 * (np.power(2, 2 * igr) - 1)).clip(0, 1)
             if 'RHOB' in master_df.columns:
                 master_df['PHID'] = ((2.65 - master_df['RHOB']) / (2.65 - 1.0)).clip(0, 0.45)
                 
             res_col = None
-            for r in ['ILD', 'LLD', 'RT', 'RILD']:
+            for r in ['ILD', 'LLD', 'RT', 'RILD', 'RESD']:
                 if r in master_df.columns:
                     res_col = r
                     break
@@ -95,57 +100,51 @@ if uploaded_files:
                 phid_safe = master_df['PHID'].replace(0, 0.001)
                 rt_safe = master_df[res_col].replace(0, 1)
                 sw = np.power((1.0 * rw_val) / (np.power(phid_safe, 2.0) * rt_safe), 0.5)
-                master_df['Sw'] = sw.clip(0, 1)
-            st.sidebar.success("✅ تمت الحسابات البتروفيزيائية بنجاح!")
-            
-        # تحديث قائمة المجسات المتاحة بعد الحسابات
-        current_logs = [col for col in master_df.columns if col not in ['MD', 'DEPT', 'Well_Name', 'Electrofacies', 'Facies_Name']]
+                master_df['SW'] = sw.clip(0, 1)
+            st.sidebar.success("✅ تمت الحسابات بنجاح!")
+
+        current_logs = [col for col in master_df.columns if col not in exclude_cols]
         
         st.sidebar.markdown("---")
-        st.sidebar.subheader("2️⃣ التصنيف غير الموجه للسحنات (Unsupervised Facies)")
-        
-        # اختيار خوارزمية التصنيف غير الموجه
-        clustering_algo = st.sidebar.selectbox("اختر خوارزمية التصنيف:", options=[
+        st.sidebar.subheader("2️⃣ التصنيف غير الموجه للسحنات")
+        clustering_algo = st.sidebar.selectbox("اختر الخوارزمية:", options=[
             "K-Means Clustering", 
             "Gaussian Mixture Model (GMM)", 
             "Agglomerative Hierarchical Clustering"
         ])
         
-        n_clusters = st.sidebar.slider("عدد السحنات (K / Clusters):", min_value=2, max_value=8, value=5)
-        default_features = [f for f in ['GR', 'VSH', 'PHID'] if f in current_logs]
-        selected_features = st.sidebar.multiselect("اختر المجسات المدخلة للتصنيف:", options=current_logs, default=default_features)
+        n_clusters = st.sidebar.slider("عدد السحنات (K):", min_value=2, max_value=8, value=5)
+        default_feats = [f for f in ['GR', 'VSH', 'PHID'] if f in current_logs]
+        selected_features = st.sidebar.multiselect("اختر المجسات المدخلة للتصنيف:", options=current_logs, default=default_feats)
         
         run_clustering = st.sidebar.button("⚙️ تشغيل خوارزمية التصنيف")
         
-        if 'Electrofacies' not in master_df.columns:
-            master_df['Electrofacies'] = np.nan
-            master_df['Facies_Name'] = "Unclassified"
-            
         if run_clustering:
             if len(selected_features) < 2:
                 st.error("⚠️ يرجى اختيار مجسين على الأقل للتصنيف.")
             else:
                 valid_idx = master_df.dropna(subset=selected_features).index
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(master_df.loc[valid_idx, selected_features])
-                
-                if clustering_algo == "K-Means Clustering":
-                    model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                    preds = model.fit_predict(X_scaled) + 1
-                elif clustering_algo == "Gaussian Mixture Model (GMM)":
-                    model = GaussianMixture(n_components=n_clusters, random_state=42)
-                    preds = model.fit_predict(X_scaled) + 1
-                else:
-                    model = AgglomerativeClustering(n_clusters=n_clusters)
-                    preds = model.fit_predict(X_scaled) + 1
+                if len(valid_idx) > 0:
+                    scaler = StandardScaler()
+                    X_scaled = scaler.fit_transform(master_df.loc[valid_idx, selected_features])
                     
-                master_df['Electrofacies'] = np.nan
-                master_df.loc[valid_idx, 'Electrofacies'] = preds
-                st.success(f"✅ تم تنفيذ التصنيف باستخدام ({clustering_algo}) لجميع الآبار بنجاح!")
+                    if clustering_algo == "K-Means Clustering":
+                        model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                        preds = model.fit_predict(X_scaled) + 1
+                    elif clustering_algo == "Gaussian Mixture Model (GMM)":
+                        model = GaussianMixture(n_components=n_clusters, random_state=42)
+                        preds = model.fit_predict(X_scaled) + 1
+                    else:
+                        model = AgglomerativeClustering(n_clusters=n_clusters)
+                        preds = model.fit_predict(X_scaled) + 1
+                        
+                    master_df['ELECTROFACIES'] = np.nan
+                    master_df.loc[valid_idx, 'ELECTROFACIES'] = preds
+                    st.sidebar.success(f"✅ تم التصنيف بنجاح!")
 
         # تخصيص الألوان والأسماء
         st.sidebar.markdown("---")
-        st.sidebar.subheader("3️⃣ تسمية السحنات وتخصيص الألوان")
+        st.sidebar.subheader("3️⃣ تسمية السحنات والألوان")
         facies_names = {}
         facies_colors = {}
         default_color_list = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
@@ -156,17 +155,18 @@ if uploaded_files:
             default_col = default_color_list[(i - 1) % len(default_color_list)]
             facies_colors[i] = st.sidebar.color_picker(f"لون سحنة {i}:", value=default_col)
             
-        if 'Electrofacies' in master_df.columns:
-            master_df['Facies_Name'] = master_df['Electrofacies'].map(facies_names)
+        if 'ELECTROFACIES' in master_df.columns:
+            master_df['FACIES_NAME'] = master_df['ELECTROFACIES'].map(facies_names)
 
-        # التبويبات الرئيسية للعرض
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 لوحة مسارات البئر", "📉 الرسوم التقاطعية", "📐 التحقق الرياضي (Elbow)", "📥 تصدير النتائج"])
+        # التبويبات
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 لوحة المسارات", "📉 الرسوم التقاطعية", "📐 التحقق الرياضي (Elbow)", "📥 تصدير النتائج"])
         
-        single_well_df = well_raw_df[(well_raw_df[depth_col_name] >= min_depth) & (well_raw_df[depth_col_name] <= max_depth)].sort_values(by=depth_col_name)
+        single_well_df = well_raw_df[(well_raw_df['MD'] >= min_depth) & (well_raw_df['MD'] <= max_depth)].sort_values(by='MD')
         
         with tab1:
             st.subheader(f"لوحة المسارات للبئر: {selected_well}")
-            chosen_tracks = st.multiselect("اختر المجسات للعرض في اللوحة:", options=current_logs, default=[t for t in ['GR', 'VSH', 'PHID'] if t in current_logs])
+            default_tr = [t for t in ['GR', 'VSH', 'PHID'] if t in current_logs]
+            chosen_tracks = st.multiselect("اختر المجسات للعرض:", options=current_logs, default=default_tr)
             
             if len(chosen_tracks) == 0:
                 st.warning("⚠️ اختر مساراً واحداً على الأقل للعرض.")
@@ -180,7 +180,7 @@ if uploaded_files:
                     if n_plots == 1:
                         axes = [axes]
                         
-                    d = single_well_df[depth_col_name]
+                    d = single_well_df['MD']
                     for idx, track in enumerate(chosen_tracks):
                         axes[idx].plot(single_well_df[track], d, lw=1.2)
                         axes[idx].set_title(track, fontsize=9, fontweight='bold')
@@ -188,7 +188,7 @@ if uploaded_files:
                         
                     ax_f = axes[len(chosen_tracks)]
                     depths = d.values
-                    facies_vals = single_well_df['Electrofacies'].values if 'Electrofacies' in single_well_df.columns else np.zeros_like(depths)
+                    facies_vals = single_well_df['ELECTROFACIES'].values if 'ELECTROFACIES' in single_well_df.columns else np.zeros_like(depths)
                     
                     for j in range(len(depths) - 1):
                         f_val = facies_vals[j]
@@ -211,22 +211,22 @@ if uploaded_files:
                     fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
                     buf.seek(0)
                     st.pyplot(fig)
-                    
                     st.download_button("📥 تحميل لوحة المسارات (300 DPI)", data=buf, file_name=f"{selected_well}_Track.png", mime="image/png")
                     
                 with col2:
                     st.subheader("📋 إحصائيات السحنات")
-                    if 'Electrofacies' in single_well_df.columns and single_well_df['Electrofacies'].notna().sum() > 0:
-                        stats = single_well_df.groupby(['Electrofacies', 'Facies_Name']).agg(
-                            Count=(chosen_tracks[0], 'count'),
-                            Mean_Value=(chosen_tracks[0], 'mean')
+                    if 'ELECTROFACIES' in single_well_df.columns and single_well_df['ELECTROFACIES'].notna().sum() > 0:
+                        stat_tr = chosen_tracks[0] if len(chosen_tracks) > 0 else current_logs[0]
+                        stats = single_well_df.groupby(['ELECTROFACIES', 'FACIES_NAME']).agg(
+                            Count=(stat_tr, 'count'),
+                            Mean_Value=(stat_tr, 'mean')
                         ).reset_index()
-                        total_pts = len(single_well_df.dropna(subset=['Electrofacies']))
-                        stats['Thickness_Percentage(%)'] = ((stats['Count'] / total_pts) * 100).round(2)
+                        total_pts = len(single_well_df.dropna(subset=['ELECTROFACIES']))
+                        stats['Thickness_Percentage(%)'] = ((stats['Count'] / total_pts) * 100).round(2) if total_pts > 0 else 0.0
                         stats['Mean_Value'] = stats['Mean_Value'].round(3)
                         st.dataframe(stats, use_container_width=True)
                     else:
-                        st.info("قم بتشغيل التصنيف غير الموجه أولاً لعرض الإحصائيات.")
+                        st.info("قم بتشغيل التصنيف غير الموجه من القائمة الجانبية لعرض الإحصائيات.")
 
         with tab2:
             st.subheader("📉 الرسوم التقاطعية التفاعلية (Crossplot)")
@@ -235,9 +235,9 @@ if uploaded_files:
                 cp_y = st.selectbox("محور (Y):", options=current_logs, index=1)
                 
                 fig_cp, ax_cp = plt.subplots(figsize=(8, 6))
-                if 'Electrofacies' in master_df.columns and master_df['Electrofacies'].notna().sum() > 0:
+                if 'ELECTROFACIES' in master_df.columns and master_df['ELECTROFACIES'].notna().sum() > 0:
                     for f_val in range(1, n_clusters + 1):
-                        subset_f = master_df[master_df['Electrofacies'] == f_val]
+                        subset_f = master_df[master_df['ELECTROFACIES'] == f_val]
                         if not subset_f.empty:
                             col_hex = facies_colors.get(f_val, '#1f77b4')
                             f_label = facies_names.get(f_val, f"Facies {f_val}")
@@ -260,10 +260,10 @@ if uploaded_files:
         with tab3:
             st.subheader("📐 البرهان الرياضي لاختيار عدد السحنات (Elbow Method)")
             if st.button("حساب منحنى Elbow"):
-                valid_idx = master_df.dropna(subset=default_features).index
+                valid_idx = master_df.dropna(subset=default_feats).index
                 if len(valid_idx) > 0:
                     scaler = StandardScaler()
-                    X_sc = scaler.fit_transform(master_df.loc[valid_idx, default_features])
+                    X_sc = scaler.fit_transform(master_df.loc[valid_idx, default_feats])
                     inertias = []
                     k_rng = range(1, 9)
                     for k in k_rng:
