@@ -97,7 +97,7 @@ if uploaded_files:
 # ==========================================
 if st.session_state.master_df is not None:
     master_df = st.session_state.master_df
-    exclude_cols = ['MD', 'WELL_NAME', 'ELECTROFACIES', 'FACIES_NAME']
+    exclude_cols = ['MD', 'WELL_NAME', 'ELECTROFACIES', 'FACIES_NAME', 'VSH_LEGACY', 'PHID_LEGACY', 'SW_LEGACY']
     current_logs = [col for col in master_df.columns if col not in exclude_cols]
     
     st.sidebar.markdown("---")
