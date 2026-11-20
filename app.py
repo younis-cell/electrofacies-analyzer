@@ -10,9 +10,9 @@ import tempfile
 import pickle
 import io
 
-st.set_page_config(page_title="Zubair Electrofacies Suite", layout="wide")
+st.set_page_config(page_title="Electrofacies Analyzer", layout="wide")
 
-st.title("🛢️ Zubair Electrofacies & Petrophysical Suite")
+st.title("🛢️ Electrofacies & Petrophysical Analyzer")
 
 # تهيئة ذاكرة الجلسة
 if 'master_df' not in st.session_state:
@@ -52,14 +52,14 @@ if st.session_state.master_df is not None:
     st.sidebar.download_button(
         label="💾 حفظ المشروع الحالي للعودة لاحقاً",
         data=proj_bytes,
-        file_name="Zubair_Project.zubair",
+        file_name="Electrofacies_Project.zubair",
         mime="application/octet-stream"
     )
 
 st.sidebar.markdown("---")
 st.sidebar.header("📁 رفع بيانات الآبار")
 uploaded_files = st.sidebar.file_uploader("ارفع ملفات الـ LAS الخاصة بالآبار:", type=["las"], accept_multiple_files=True)
-formation_name = st.sidebar.text_input("اسم التكوين الجيولوجي:", value="Zubair Formation")
+formation_name = st.sidebar.text_input("اسم التكوين الجيولوجي:", value="Formation")
 
 if uploaded_files:
     if st.sidebar.button("📥 معالجة وقراءة الملفات الجديدة"):
@@ -212,6 +212,8 @@ if st.session_state.master_df is not None:
             st.warning("لا توجد منحنيات رقمية مناسبة في البيانات.")
         else:
             st.markdown("#### 1. حجم الطفل VSH")
+            if 'GR' not in numeric_logs:
+                st.warning("لم يُعثر على منحنى باسم GR؛ اختر يدوياً المنحنى المكافئ لأشعة كاما.")
             gr_idx = numeric_logs.index('GR') if 'GR' in numeric_logs else 0
             gr_curve = st.selectbox("منحنى أشعة كاما:", numeric_logs, index=gr_idx, key="petro_gr")
             vsh_method = st.selectbox("معادلة VSH:", ["Linear","Larionov - Tertiary rocks","Larionov - Older rocks","Steiber","Clavier"], key="petro_vsh_method")
@@ -236,6 +238,8 @@ if st.session_state.master_df is not None:
 
             st.markdown("---")
             st.markdown("#### 3. التشبع بالماء SW - معادلة Archie")
+            if not any(c in numeric_logs for c in ['ILD','LLD','RT','RILD','RESD']):
+                st.warning("لم يُعثر على منحنى مقاومة معروف الاسم؛ اختر يدوياً منحنى Rt الصحيح وتأكد من وحدته.")
             rt_candidates=[c for c in ['ILD','LLD','RT','RILD','RESD'] if c in numeric_logs]
             rt_idx=numeric_logs.index(rt_candidates[0]) if rt_candidates else 0
             rt_curve=st.selectbox("منحنى مقاومة التكوين Rt (ohm·m):",numeric_logs,index=rt_idx,key="petro_rt")
