@@ -115,27 +115,28 @@ if st.session_state.master_df is not None:
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("1️⃣ الحسابات البتروفيزيائية")
-    rw_val = st.sidebar.slider("مقاومة ماء التكوين (Rw):", 0.01, 0.1, 0.03, 0.01)
-    if st.sidebar.button("تنفيذ الحسابات (VSH, PHID, Sw)"):
-        if 'GR' in master_df.columns:
-            gr_clean = master_df['GR'].quantile(0.05)
-            gr_shale = master_df['GR'].quantile(0.95)
-            if gr_shale != gr_clean:
-                igr = (master_df['GR'] - gr_clean) / (gr_shale - gr_clean)
-                master_df['VSH'] = (0.083 * (np.power(2, 2 * igr) - 1)).clip(0, 1)
-        if 'RHOB' in master_df.columns:
-            master_df['PHID'] = ((2.65 - master_df['RHOB']) / (2.65 - 1.0)).clip(0, 0.45)
-            
-        res_col = next((r for r in ['ILD', 'LLD', 'RT', 'RILD', 'RESD'] if r in master_df.columns), None)
-        if res_col and 'PHID' in master_df.columns:
-            phid_safe = master_df['PHID'].replace(0, 0.001)
-            rt_safe = master_df[res_col].replace(0, 1)
-            sw = np.power((1.0 * rw_val) / (np.power(phid_safe, 2.0) * rt_safe), 0.5)
-            master_df['SW'] = sw.clip(0, 1)
-        st.session_state.master_df = master_df
-        st.sidebar.success("✅ تمت الحسابات بنجاح!")
+    with st.sidebar.expander("الحسابات الحالية القديمة (للمقارنة)", expanded=False):
+        st.caption("تحفظ هذه الطريقة نتائجها في أعمدة منفصلة حتى لا تستبدل الحسابات الجديدة.")
+        rw_legacy = st.slider("Rw للطريقة القديمة:", 0.01, 0.1, 0.03, 0.01, key="rw_legacy")
+        if st.button("تشغيل الحسابات القديمة وحفظها للمقارنة", key="run_legacy_petro"):
+            if 'GR' in master_df.columns:
+                gr_legacy = pd.to_numeric(master_df['GR'], errors='coerce')
+                gc = gr_legacy.quantile(0.05)
+                gs = gr_legacy.quantile(0.95)
+                if pd.notna(gc) and pd.notna(gs) and gs != gc:
+                    master_df['VSH_LEGACY'] = (0.083 * (np.power(2, 2 * ((gr_legacy-gc)/(gs-gc))) - 1)).clip(0, 1)
+            if 'RHOB' in master_df.columns:
+                master_df['PHID_LEGACY'] = ((2.65-pd.to_numeric(master_df['RHOB'],errors='coerce'))/(2.65-1.0)).clip(0,0.45)
+            res = next((r for r in ['ILD','LLD','RT','RILD','RESD'] if r in master_df.columns), None)
+            if res and 'PHID_LEGACY' in master_df.columns:
+                phi = master_df['PHID_LEGACY'].replace(0,0.001)
+                rt = pd.to_numeric(master_df[res],errors='coerce').replace(0,np.nan)
+                master_df['SW_LEGACY'] = np.power(rw_legacy/(np.power(phi,2.0)*rt),0.5).clip(0,1)
+            st.session_state.master_df = master_df
+            st.sidebar.success("حُفظت نتائج الطريقة القديمة في أعمدة LEGACY.")
 
     st.sidebar.markdown("---")
+
     st.sidebar.subheader("2️⃣ التصنيف غير الموجه للسحنات")
     clustering_algo = st.sidebar.selectbox("اختر الخوارزمية:", options=[
         "K-Means Clustering", 
@@ -190,15 +191,115 @@ if st.session_state.master_df is not None:
     # ==========================================
     # 3. التبويبات الرئيسية (بما فيها Properties)
     # ==========================================
-    tab1, tab_props, tab2, tab3, tab4 = st.tabs([
-        "📊 لوحة المسارات", 
-        "🎨 Properties (خصائص المنحنيات)", 
-        "📉 الرسوم التقاطعية", 
-        "📐 التحقق الرياضي (Elbow)", 
+    tab_petro, tab1, tab_props, tab2, tab3, tab4 = st.tabs([
+        "🧪 الحسابات البتروفيزيائية",
+        "📊 لوحة المسارات",
+        "🎨 Properties (خصائص المنحنيات)",
+        "📉 الرسوم التقاطعية",
+        "📐 التحقق الرياضي (Elbow)",
         "📥 تصدير النتائج"
     ])
-    
+
     single_well_df = well_raw_df[(well_raw_df['MD'] >= min_depth) & (well_raw_df['MD'] <= max_depth)].sort_values(by='MD')
+    
+    # تبويب مستقل للحسابات البتروفيزيائية
+    with tab_petro:
+        st.subheader("الحسابات البتروفيزيائية القابلة للتخصيص")
+        st.info("تُطبّق الحسابات على جميع الآبار، ويُحسب VSH لكل بئر على حدة. تحقق من الوحدات والافتراضات قبل اعتماد النتائج.")
+        excluded = ['MD','ELECTROFACIES','VSH','PHID','SW','VSH_LEGACY','PHID_LEGACY','SW_LEGACY']
+        numeric_logs = [c for c in master_df.columns if c not in excluded and pd.api.types.is_numeric_dtype(master_df[c])]
+        if not numeric_logs:
+            st.warning("لا توجد منحنيات رقمية مناسبة في البيانات.")
+        else:
+            st.markdown("#### 1. حجم الطفل VSH")
+            gr_idx = numeric_logs.index('GR') if 'GR' in numeric_logs else 0
+            gr_curve = st.selectbox("منحنى أشعة كاما:", numeric_logs, index=gr_idx, key="petro_gr")
+            vsh_method = st.selectbox("معادلة VSH:", ["Linear","Larionov - Tertiary rocks","Larionov - Older rocks","Steiber","Clavier"], key="petro_vsh_method")
+            c1,c2=st.columns(2)
+            with c1: gr_low=st.slider("مئين GR clean:",0,30,5,key="petro_gr_low")
+            with c2: gr_high=st.slider("مئين GR shale:",70,100,95,key="petro_gr_high")
+            st.caption("تُحسب حدود GR clean وGR shale لكل بئر بصورة مستقلة.")
+
+            st.markdown("---")
+            st.markdown("#### 2. المسامية الكثافية PHID")
+            rhob_idx=numeric_logs.index('RHOB') if 'RHOB' in numeric_logs else 0
+            rhob_curve=st.selectbox("منحنى الكثافة RHOB (g/cm³):",numeric_logs,index=rhob_idx,key="petro_rhob")
+            litho={"Sandstone":2.65,"Limestone":2.71,"Dolomite":2.87,"Custom":2.65}
+            lithology=st.selectbox("نوع مصفوفة الصخر:",list(litho.keys()),key="petro_lithology")
+            if lithology=="Custom":
+                rho_ma=st.number_input("كثافة المصفوفة (g/cm³):",1.0,4.0,2.65,0.01,key="petro_rho_ma")
+            else:
+                rho_ma=litho[lithology]
+                st.caption(f"كثافة المصفوفة المستخدمة: {rho_ma:.2f} g/cm³")
+            rho_fl=st.number_input("كثافة السائل (g/cm³):",0.5,1.5,1.00,0.01,key="petro_rho_fl")
+            phi_max=st.slider("الحد الأعلى للمسامية:",0.10,0.60,0.45,0.01,key="petro_phi_max")
+
+            st.markdown("---")
+            st.markdown("#### 3. التشبع بالماء SW - معادلة Archie")
+            rt_candidates=[c for c in ['ILD','LLD','RT','RILD','RESD'] if c in numeric_logs]
+            rt_idx=numeric_logs.index(rt_candidates[0]) if rt_candidates else 0
+            rt_curve=st.selectbox("منحنى مقاومة التكوين Rt (ohm·m):",numeric_logs,index=rt_idx,key="petro_rt")
+            phi_opts=[c for c in ['PHID','PHIE','NPHI'] if c in master_df.columns]
+            phi_opts += [c for c in numeric_logs if c not in phi_opts]
+            phi_curve=st.selectbox("منحنى المسامية المستخدم:",phi_opts,index=0,key="petro_phi")
+            c1,c2,c3=st.columns(3)
+            with c1:
+                rw=st.number_input("Rw (ohm·m):",0.0001,10.0,0.03,0.01,format="%.4f",key="petro_rw")
+                arch_a=st.number_input("معامل a:",0.01,10.0,1.0,0.1,key="petro_a")
+            with c2:
+                arch_m=st.number_input("معامل m:",0.1,5.0,2.0,0.1,key="petro_m")
+                arch_n=st.number_input("معامل n:",0.1,5.0,2.0,0.1,key="petro_n")
+            with c3:
+                st.caption("Sw = ((a × Rw) / (φᵐ × Rt))^(1/n)")
+                st.caption("تأكد من ملاءمة افتراضات Archie للمكمن.")
+
+            st.markdown("---")
+            if st.button("تنفيذ الحسابات المحددة",type="primary",key="run_petro_custom"):
+                if gr_low>=gr_high:
+                    st.error("يجب أن يكون مئين GR clean أقل من مئين GR shale.")
+                elif rho_ma<=rho_fl:
+                    st.error("كثافة المصفوفة يجب أن تكون أكبر من كثافة السائل.")
+                else:
+                    # VSH per well
+                    vsh=pd.Series(np.nan,index=master_df.index,dtype=float)
+                    groups=master_df.groupby('WELL_NAME',dropna=False).groups.values() if 'WELL_NAME' in master_df.columns else [master_df.index]
+                    for idxs in groups:
+                        gr=pd.to_numeric(master_df.loc[idxs,gr_curve],errors='coerce')
+                        gclean=gr.quantile(gr_low/100)
+                        gshale=gr.quantile(gr_high/100)
+                        if pd.notna(gclean) and pd.notna(gshale) and gshale>gclean:
+                            igr=((gr-gclean)/(gshale-gclean)).clip(0,1)
+                            if vsh_method=="Linear": values=igr
+                            elif vsh_method=="Larionov - Tertiary rocks": values=0.083*(np.power(2.0,3.7*igr)-1.0)
+                            elif vsh_method=="Larionov - Older rocks": values=0.33*(np.power(2.0,2.0*igr)-1.0)
+                            elif vsh_method=="Steiber": values=igr/(3.0-2.0*igr)
+                            else: values=1.7-np.sqrt((3.38-np.power(igr+0.7,2)).clip(lower=0))
+                            vsh.loc[idxs]=pd.Series(values,index=gr.index).clip(0,1)
+                    master_df['VSH']=vsh
+
+                    # Density porosity
+                    rhob=pd.to_numeric(master_df[rhob_curve],errors='coerce')
+                    master_df['PHID']=((rho_ma-rhob)/(rho_ma-rho_fl)).clip(0,phi_max)
+
+                    # Archie saturation; non-positive or missing inputs remain NaN
+                    phi=pd.to_numeric(master_df[phi_curve],errors='coerce')
+                    rt=pd.to_numeric(master_df[rt_curve],errors='coerce')
+                    sw=pd.Series(np.nan,index=master_df.index,dtype=float)
+                    valid=phi.notna() & rt.notna() & (phi>0) & (rt>0)
+                    if valid.any():
+                        term=(arch_a*rw)/(np.power(phi.loc[valid],arch_m)*rt.loc[valid])
+                        sw.loc[valid]=np.power(term,1.0/arch_n)
+                    master_df['SW']=sw.clip(0,1)
+                    st.session_state.master_df=master_df
+                    st.success("اكتملت الحسابات وتم تحديث VSH وPHID وSW. نتائج الطريقة القديمة تبقى في أعمدة LEGACY.")
+                    st.caption(f"الإعدادات: VSH={vsh_method}؛ مئينات GR={gr_low}/{gr_high}؛ ρma={rho_ma:.2f}؛ ρfluid={rho_fl:.2f}؛ Archie a={arch_a}, m={arch_m}, n={arch_n}, Rw={rw}.")
+
+            compare=[c for c in ['WELL_NAME','MD','VSH','VSH_LEGACY','PHID','PHID_LEGACY','SW','SW_LEGACY'] if c in master_df.columns]
+            if any(c.endswith('_LEGACY') for c in compare):
+                st.markdown("#### مقارنة النتائج الحالية والقديمة")
+                st.dataframe(master_df[compare].head(200),use_container_width=True)
+                st.download_button("تحميل المقارنة CSV",master_df[compare].to_csv(index=False).encode('utf-8'),"Petrophysical_Comparison.csv","text/csv",key="petro_compare_csv")
+
     
     # تبويب Properties للتحكم الكامل بخصائص المنحنيات واللوحة
     with tab_props:
