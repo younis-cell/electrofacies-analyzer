@@ -182,7 +182,8 @@ if uploaded_files:
                                         new_df.loc[w_idx, 'MD'].values,
                                         w_sorted['MD'].values,
                                         w_sorted['CORE_K'].values,
-                                        left=np.nan, right=np.nan
+                                        left=np.nan,
+                                        right=np.nan
                                     )
                 except Exception as e:
                     st.warning(f"Core file merge warning: {e}")
@@ -204,4 +205,16 @@ if st.session_state.master_df is not None:
     wells_list = master_df['WELL_NAME'].unique().tolist()
     selected_well = st.sidebar.selectbox("Select Well:", options=wells_list)
 
-    well_raw_df = master_df[master_df['WELL_NAME'] == selected_
+    well_raw_df = master_df[master_df['WELL_NAME'] == selected_well]
+    well_min_d = float(well_raw_df['MD'].min()) if not well_raw_df['MD'].isna().all() else 0.0
+    well_max_d = float(well_raw_df['MD'].max()) if not well_raw_df['MD'].isna().all() else 1000.0
+
+    d_col1, d_col2 = st.sidebar.columns(2)
+    with d_col1:
+        min_depth = st.number_input("Top Depth (m):", value=well_min_d)
+    with d_col2:
+        max_depth = st.number_input("Base Depth (m):", value=well_max_d)
+
+    # ---- Base Petrophysics ----
+    with st.sidebar.expander("1. Base Petrophysics (VSH, PHID, SW)", expanded=False):
+        matrix_rho = st.number_input("Matrix Density (g/cc):", value=2.65
