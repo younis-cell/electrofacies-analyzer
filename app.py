@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import tempfile
 import pickle
@@ -21,6 +22,7 @@ defaults = {
     'track_props': {},
     'ai_summary': None,
     'perm_summary': None,
+    'ef_summary': None,
     'cutoff_params': {
         'vsh_max': 0.40,
         'phi_min': 0.10,
@@ -98,6 +100,7 @@ if saved_project is not None:
         st.session_state.track_props = project_data.get('track_props', {})
         st.session_state.ai_summary = project_data.get('ai_summary')
         st.session_state.perm_summary = project_data.get('perm_summary')
+        st.session_state.ef_summary = project_data.get('ef_summary')
         if project_data.get('cutoff_params'):
             st.session_state.cutoff_params = project_data.get('cutoff_params')
         st.sidebar.success("Project restored.")
@@ -109,6 +112,7 @@ if st.session_state.master_df is not None:
         'track_props': st.session_state.track_props,
         'ai_summary': st.session_state.ai_summary,
         'perm_summary': st.session_state.perm_summary,
+        'ef_summary': st.session_state.ef_summary,
         'cutoff_params': st.session_state.cutoff_params
     }
     st.sidebar.download_button(
@@ -143,7 +147,7 @@ if uploaded_files:
 
         if all_wells_data:
             new_df = pd.concat(all_wells_data, ignore_index=True)
-            for col in ['VSH', 'PHID', 'SW', 'WASHOUT_FLAG', 'CORE_K', 'PERM_AI', 'PERM_UNC', 'TIGHT_FLAG', 'PAY_FLAG']:
+            for col in ['VSH', 'PHID', 'SW', 'WASHOUT_FLAG', 'CORE_K', 'PERM_AI', 'PERM_UNC', 'TIGHT_FLAG', 'PAY_FLAG', 'ELECTROFACIES']:
                 if col not in new_df.columns:
                     new_df[col] = np.nan
 
@@ -229,7 +233,7 @@ if st.session_state.master_df is not None:
 
     # ---- Stage 1: Log Prediction & Washout Correction ----
     with st.sidebar.expander("2. Stage 1: Log Prediction & Washout", expanded=True):
-        all_available_now = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT']]
+        all_available_now = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT', 'ELECTROFACIES']]
         target_log = st.selectbox("Target Log:", options=all_available_now)
 
         default_preds = [c for c in ['GR', 'NPHI', 'DT', 'RHOB', 'VSH'] if c in all_available_now and c != target_log]
@@ -324,7 +328,7 @@ if st.session_state.master_df is not None:
             ]
         )
 
-        available_las_feats = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT', 'PERM_AI', 'PERM_UNC'] and pd.api.types.is_numeric_dtype(master_df[c])]
+        available_las_feats = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT', 'ELECTROFACIES', 'PERM_AI', 'PERM_UNC'] and pd.api.types.is_numeric_dtype(master_df[c])]
 
         if train_source_mode == "Core File (Reference Core Wells)" and core_df is not None:
             core_num_cols = [c for c in core_df.columns if c not in ['MD', 'CORE_K'] and pd.api.types.is_numeric_dtype(core_df[c])]
@@ -473,15 +477,82 @@ if st.session_state.master_df is not None:
     master_df = st.session_state.master_df
     well_raw_df = master_df[master_df['WELL_NAME'] == selected_well]
     single_well_df = well_raw_df[(well_raw_df['MD'] >= min_depth) & (well_raw_df['MD'] <= max_depth)].sort_values(by='MD')
-    all_plot_logs = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT'] and pd.api.types.is_numeric_dtype(master_df[c])]
+    all_plot_logs = [c for c in master_df.columns if c not in ['MD', 'WELL_NAME', 'WASHOUT_FLAG', 'TIGHT_FLAG', 'PAY_FLAG', 'RES_UNIT', 'ELECTROFACIES'] and pd.api.types.is_numeric_dtype(master_df[c])]
 
-    tab_s2, tab_ai, tab_tracks, tab_props, tab_export = st.tabs([
+    tab_ef, tab_s2, tab_ai, tab_tracks, tab_props, tab_export = st.tabs([
+        "Electrofacies",
         "Core Perm & Units (Stage 2)",
         "Log Prediction & Uncertainty (Stage 1)",
         "Log Tracks",
         "Properties",
         "Export"
     ])
+
+    with tab_ef:
+        st.subheader(f"Electrofacies Classification — {selected_well} ({formation_name})")
+        ef_c1, ef_c2 = st.columns([2, 1])
+        with ef_c1:
+            default_ef_logs = [c for c in ['GR', 'VSH', 'PHID', 'RHOB', 'NPHI', 'DT', 'PERM_AI'] if c in all_plot_logs]
+            ef_features = st.multiselect("Electrofacies Input Logs:", options=all_plot_logs, default=default_ef_logs, key="ef_feats")
+        with ef_c2:
+            n_clusters = st.slider("Number of Clusters (EF):", min_value=2, max_value=8, value=5, key="ef_k")
+
+        if st.button("Run Electrofacies Clustering"):
+            if len(ef_features) < 2:
+                st.error("Select at least 2 logs for clustering.")
+            else:
+                ef_df = master_df.copy()
+                valid_ef = ef_df[ef_features].notna().all(axis=1)
+                if valid_ef.sum() < n_clusters * 2:
+                    st.error("Insufficient complete rows for Electrofacies clustering.")
+                else:
+                    sc_ef = StandardScaler()
+                    X_ef = sc_ef.fit_transform(ef_df.loc[valid_ef, ef_features])
+                    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                    labels_ef = km.fit_predict(X_ef) + 1
+                    ef_df['ELECTROFACIES'] = np.nan
+                    ef_df.loc[valid_ef, 'ELECTROFACIES'] = labels_ef
+                    st.session_state.master_df = ef_df
+                    st.session_state.ef_summary = {
+                        'n_clusters': int(n_clusters),
+                        'features': ef_features,
+                        'classified_pts': int(valid_ef.sum())
+                    }
+                    st.success("Electrofacies clustering completed.")
+
+        if 'ELECTROFACIES' in single_well_df.columns and single_well_df['ELECTROFACIES'].notna().any() and len(single_well_df) > 0:
+            fig_ef, ax_ef = plt.subplots(1, 1, figsize=(track_width * 1.4, fig_height))
+            d_ef = single_well_df['MD'].values
+            ef_vals = single_well_df['ELECTROFACIES'].fillna(0).values
+            cmap = plt.get_cmap('tab10', max(int(ef_vals.max()) + 1, 2))
+            for k_id in sorted(np.unique(ef_vals)):
+                if k_id <= 0:
+                    continue
+                mask_k = ef_vals == k_id
+                ax_ef.fill_betweenx(d_ef, 0, 1, where=mask_k, color=cmap(int(k_id) - 1), alpha=0.85, step="mid", label=f"EF-{int(k_id)}")
+            ax_ef.set_xlim(0, 1)
+            ax_ef.set_xticks([])
+            ax_ef.set_ylim(d_ef.max(), d_ef.min())
+            ax_ef.set_ylabel("Depth (m)", fontsize=title_fontsize, fontweight="bold")
+            ax_ef.set_title("Electrofacies", fontsize=title_fontsize, fontweight="bold")
+            ax_ef.legend(loc="best", fontsize=8)
+            if show_grid:
+                ax_ef.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+            plt.tight_layout()
+            buf_ef = io.BytesIO()
+            fig_ef.savefig(buf_ef, format="png", dpi=300, bbox_inches="tight")
+            buf_ef.seek(0)
+            st.pyplot(fig_ef)
+            st.download_button("Download Electrofacies Plot (300 DPI)", data=buf_ef, file_name=f"{selected_well}_Electrofacies.png", mime="image/png")
+
+            # Cluster statistics summary
+            stat_cols = [c for c in ['GR', 'VSH', 'PHID', 'SW', 'PERM_AI'] if c in single_well_df.columns]
+            if stat_cols and single_well_df['ELECTROFACIES'].notna().any():
+                grp_ef = single_well_df[single_well_df['ELECTROFACIES'].notna()].groupby('ELECTROFACIES')[stat_cols].mean().round(3)
+                st.dataframe(grp_ef, use_container_width=True)
+        else:
+            st.info("Select logs and cluster count, then click Run Electrofacies Clustering.")
 
     with tab_props:
         st.subheader("Curve & Layout Properties")
@@ -642,8 +713,8 @@ if st.session_state.master_df is not None:
 
     with tab_tracks:
         st.subheader(f"Well Log Tracks — {selected_well}")
-        default_tr = [t for t in ['GR', 'VSH', 'PHID', 'SW', 'PERM_AI'] if t in all_plot_logs]
-        chosen_tracks = st.multiselect("Select Tracks:", options=all_plot_logs, default=default_tr)
+        default_tr = [t for t in ['GR', 'VSH', 'PHID', 'SW', 'PERM_AI', 'ELECTROFACIES'] if t in all_plot_logs or t == 'ELECTROFACIES']
+        chosen_tracks = st.multiselect("Select Tracks:", options=all_plot_logs + (['ELECTROFACIES'] if 'ELECTROFACIES' in master_df.columns else []), default=default_tr)
 
         if len(chosen_tracks) > 0 and len(single_well_df) > 0:
             fig_t, axes = plt.subplots(1, len(chosen_tracks), figsize=(track_width * len(chosen_tracks), fig_height), sharey=True)
@@ -651,8 +722,17 @@ if st.session_state.master_df is not None:
                 axes = [axes]
             d_t = single_well_df['MD']
             for i, tr in enumerate(chosen_tracks):
-                tp = st.session_state.track_props.get(tr, {'color': '#1f77b4', 'lw': 1.3, 'ls': '-'})
-                axes[i].plot(single_well_df[tr], d_t, color=tp['color'], lw=tp['lw'], ls=tp['ls'])
+                if tr == 'ELECTROFACIES':
+                    ef_v = single_well_df['ELECTROFACIES'].fillna(0).values
+                    cmap_t = plt.get_cmap('tab10', max(int(ef_v.max()) + 1, 2))
+                    for k_id in sorted(np.unique(ef_v)):
+                        if k_id > 0:
+                            axes[i].fill_betweenx(d_t, 0, 1, where=(ef_v == k_id), color=cmap_t(int(k_id) - 1), alpha=0.85, step="mid")
+                    axes[i].set_xlim(0, 1)
+                    axes[i].set_xticks([])
+                else:
+                    tp = st.session_state.track_props.get(tr, {'color': '#1f77b4', 'lw': 1.3, 'ls': '-'})
+                    axes[i].plot(single_well_df[tr], d_t, color=tp['color'], lw=tp['lw'], ls=tp['ls'])
                 axes[i].set_title(tr, fontsize=title_fontsize, fontweight="bold")
                 axes[i].set_ylim(d_t.max(), d_t.min())
                 if show_grid:
