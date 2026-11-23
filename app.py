@@ -5,23 +5,40 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans, MiniBatchKMeans
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 
-st.set_page_config(page_title="AI Petrophysical Suite", layout="wide")
-st.title("AI Petrophysical & Electrofacies Suite")
+st.set_page_config(page_title="Electrofacies & Petrophysical Suite", layout="wide")
+st.title("Electrofacies & Petrophysical Suite")
+
+DEFAULT_FACIES_COLORS = [
+    "#E63946",
+    "#2A9D8F",
+    "#E9C46A",
+    "#457B9D",
+    "#8D5B4C",
+    "#9B5DE5",
+    "#F77F00",
+    "#3A86FF",
+    "#06D6A0",
+    "#FF006E",
+    "#6C757D",
+    "#AACC00",
+]
 
 DEFAULTS = {
     "master_df": None,
     "core_df": None,
     "track_props": {},
+    "facies_colors": {},
     "ai_summary": None,
     "perm_summary": None,
     "ef_summary": None,
     "layout_props": {
-        "fig_height": 9,
-        "track_width": 2.5,
+        "fig_height": 10,
+        "track_width": 2.6,
         "title_fontsize": 10,
         "show_grid": True,
     },
@@ -56,6 +73,25 @@ def get_regressor(algo_name: str):
     if algo_name == "Gradient Boosting Regressor":
         return GradientBoostingRegressor(n_estimators=150, random_state=42)
     return RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1)
+
+
+def get_cluster_model(algo_name: str, n_clusters: int):
+    k = int(n_clusters)
+    if algo_name == "Agglomerative (Hierarchical)":
+        return AgglomerativeClustering(n_clusters=k, linkage="ward")
+    if algo_name == "Gaussian Mixture (GMM)":
+        return GaussianMixture(n_components=k, covariance_type="full", random_state=42)
+    if algo_name == "MiniBatch K-Means":
+        return MiniBatchKMeans(n_clusters=k, random_state=42, n_init=10)
+    return KMeans(n_clusters=k, random_state=42, n_init=10)
+
+
+def fit_predict_facies(algo_name: str, X_scaled: np.ndarray, n_clusters: int) -> np.ndarray:
+    model = get_cluster_model(algo_name, n_clusters)
+    if hasattr(model, "predict") and algo_name == "Gaussian Mixture (GMM)":
+        model.fit(X_scaled)
+        return model.predict(X_scaled) + 1
+    return model.fit_predict(X_scaled) + 1
 
 
 def predict_with_uncertainty(model, X_train_sc, y_train, X_pred_sc):
@@ -120,6 +156,38 @@ def add_rolling_features(df: pd.DataFrame, cols: list, win: int, group_by_well: 
     return out, feat_cols
 
 
+def plot_facies_track(ax, df_well: pd.DataFrame, facies_colors: dict):
+    sub = df_well[["MD", "ELECTROFACIES"]].dropna().sort_values("MD")
+    if sub.empty:
+        ax.set_title("ELECTROFACIES")
+        ax.set_xticks([])
+        return
+    md = sub["MD"].values
+    ef = sub["ELECTROFACIES"].astype(int).values
+    if len(md) > 1:
+        dz = np.abs(np.diff(md))
+        dz = np.append(dz, dz[-1])
+        dz = np.where((dz <= 0) | np.isnan(dz), 0.1524, dz)
+    else:
+        dz = np.array([0.1524])
+
+    for i in range(len(md)):
+        f_id = int(ef[i])
+        color = facies_colors.get(f_id, DEFAULT_FACIES_COLORS[(f_id - 1) % len(DEFAULT_FACIES_COLORS)])
+        ax.barh(y=md[i], width=1.0, height=dz[i], left=0.0, color=color, edgecolor="none", align="center")
+
+    ax.set_xlim(0, 1)
+    ax.set_xticks([])
+    ax.set_title("ELECTROFACIES", fontsize=10)
+    unique_f = sorted(np.unique(ef).tolist())
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=facies_colors.get(int(u), DEFAULT_FACIES_COLORS[(int(u) - 1) % len(DEFAULT_FACIES_COLORS)]), edgecolor="black", linewidth=0.4)
+        for u in unique_f
+    ]
+    labels = [f"EF-{int(u)}" for u in unique_f]
+    ax.legend(handles, labels, loc="upper right", fontsize=8, framealpha=0.9)
+
+
 # ==========================================
 # Sidebar: Project, Data Input & Well Selection
 # ==========================================
@@ -127,13 +195,13 @@ st.sidebar.header("Project & Data")
 saved_proj = st.sidebar.file_uploader("Resume Project (.zubair):", type=["zubair"])
 if saved_proj is not None and st.sidebar.button("Load Project"):
     proj = pickle.load(saved_proj)
-    for key in ["master_df", "core_df", "track_props", "ai_summary", "perm_summary", "ef_summary", "layout_props", "cutoff_params"]:
+    for key in ["master_df", "core_df", "track_props", "facies_colors", "ai_summary", "perm_summary", "ef_summary", "layout_props", "cutoff_params"]:
         if key in proj and proj[key] is not None:
             st.session_state[key] = proj[key]
     st.sidebar.success("Project restored.")
 
 if st.session_state.master_df is not None:
-    snap = {k: st.session_state[k] for k in ["master_df", "core_df", "track_props", "ai_summary", "perm_summary", "ef_summary", "layout_props", "cutoff_params"]}
+    snap = {k: st.session_state[k] for k in ["master_df", "core_df", "track_props", "facies_colors", "ai_summary", "perm_summary", "ef_summary", "layout_props", "cutoff_params"]}
     st.sidebar.download_button(
         label="Save Project (.zubair)",
         data=pickle.dumps(snap),
@@ -216,21 +284,181 @@ d_max_def = float(w_sub_all["MD"].max()) if not w_sub_all["MD"].isna().all() els
 c_d1, c_d2 = st.sidebar.columns(2)
 min_depth = c_d1.number_input("Top (m):", value=d_min_def)
 max_depth = c_d2.number_input("Base (m):", value=d_max_def)
+w_df_view = mdf[(mdf["WELL_NAME"] == selected_well) & (mdf["MD"] >= min_depth) & (mdf["MD"] <= max_depth)].sort_values("MD")
 
 # ==========================================
-# Main Workspace: Dedicated Tabs
+# Dedicated Tabs (Logs/Facies, Crossplot, Stats, Petrophysics/Perm, Export)
 # ==========================================
-tab_petro, tab_facies, tab_export = st.tabs([
-    "1. Petrophysics & Stage 1 AI",
-    "2. Electrofacies & Stage 2 Perm/Pay",
-    "3. Logs, Crossplots & Export",
+tab_logs, tab_crossplot, tab_stats, tab_petro, tab_export = st.tabs([
+    "1. Logs & Electrofacies Track",
+    "2. Crossplot",
+    "3. Statistical Plots",
+    "4. Petrophysics & Permeability",
+    "5. Data & Export",
 ])
 
 # ------------------------------------------
-# Tab 1: Direct Petrophysics & Stage 1
+# Tab 1: Electrofacies Classification & Log Track
+# ------------------------------------------
+with tab_logs:
+    st.subheader("Electrofacies Classification")
+    num_all = [c for c in mdf.columns if pd.api.types.is_numeric_dtype(mdf[c]) and c != "MD"]
+    ef_def = [c for c in ["GR", "VSH", "PHID", "NPHI", "RHOB"] if c in num_all]
+
+    ef_c1, ef_c2, ef_c3, ef_c4 = st.columns([2, 2, 1, 1])
+    ef_feats = ef_c1.multiselect("Electrofacies Input Curves:", options=num_all, default=ef_def)
+    ef_algo = ef_c2.selectbox(
+        "Clustering Algorithm:",
+        options=["K-Means", "Agglomerative (Hierarchical)", "Gaussian Mixture (GMM)", "MiniBatch K-Means"],
+    )
+    n_clusters = ef_c3.number_input("Facies Count:", min_value=2, max_value=12, value=5, step=1)
+    with ef_c4:
+        st.write("")
+        st.write("")
+        run_ef_btn = st.button("Classify Electrofacies", type="primary")
+
+    if run_ef_btn:
+        if len(ef_feats) < 1:
+            st.error("Select at least one numeric curve.")
+        else:
+            valid_ef = mdf[ef_feats].notna().all(axis=1)
+            if valid_ef.sum() < int(n_clusters):
+                st.error("Not enough complete rows for the selected facies count. Check missing curves or compute PHID/VSH first.")
+            else:
+                sc_ef = StandardScaler()
+                X_ef = sc_ef.fit_transform(mdf.loc[valid_ef, ef_feats])
+                labels_ef = fit_predict_facies(ef_algo, X_ef, int(n_clusters))
+                mdf["ELECTROFACIES"] = np.nan
+                mdf.loc[valid_ef, "ELECTROFACIES"] = labels_ef
+                for idx_k in range(1, int(n_clusters) + 1):
+                    if idx_k not in st.session_state.facies_colors:
+                        st.session_state.facies_colors[idx_k] = DEFAULT_FACIES_COLORS[(idx_k - 1) % len(DEFAULT_FACIES_COLORS)]
+                st.session_state.master_df = mdf
+                st.session_state.ef_summary = mdf.groupby("ELECTROFACIES", dropna=True)[ef_feats].mean().round(4).to_dict(orient="index")
+                st.success(f"Electrofacies classified using {ef_algo}.")
+
+    if mdf["ELECTROFACIES"].notna().any():
+        active_f_ids = sorted(mdf["ELECTROFACIES"].dropna().astype(int).unique().tolist())
+        with st.expander("Facies Colors Customization"):
+            color_cols = st.columns(min(6, max(1, len(active_f_ids))))
+            for i, f_id in enumerate(active_f_ids):
+                def_c = st.session_state.facies_colors.get(f_id, DEFAULT_FACIES_COLORS[(f_id - 1) % len(DEFAULT_FACIES_COLORS)])
+                st.session_state.facies_colors[f_id] = color_cols[i % len(color_cols)].color_picker(f"EF-{f_id}", value=def_c, key=f"fc_{f_id}")
+
+    if st.session_state.ef_summary is not None:
+        st.dataframe(pd.DataFrame.from_dict(st.session_state.ef_summary, orient="index"))
+
+    st.divider()
+    st.subheader(f"Well Log & Facies Track — {selected_well}")
+    default_tracks = [c for c in ["GR", "VSH", "PHID", "SW", "PERM_AI", "PAY_FLAG"] if c in w_df_view.columns and w_df_view[c].notna().any()]
+    sel_tracks = st.multiselect("Curve Tracks:", options=[c for c in num_all if c != "ELECTROFACIES"], default=default_tracks)
+    show_facies_track = st.checkbox("Show Colored Electrofacies Track", value=True)
+
+    tracks_to_draw = list(sel_tracks) + (["ELECTROFACIES"] if show_facies_track and "ELECTROFACIES" in w_df_view.columns else [])
+    if len(w_df_view) > 0 and tracks_to_draw:
+        n_tr = len(tracks_to_draw)
+        fig, axes = plt.subplots(1, n_tr, sharey=True, figsize=(max(6, n_tr * 2.5), 9.5))
+        if n_tr == 1:
+            axes = [axes]
+        for ax, col in zip(axes, tracks_to_draw):
+            if col == "ELECTROFACIES":
+                plot_facies_track(ax, w_df_view, st.session_state.facies_colors)
+            else:
+                ax.plot(w_df_view[col], w_df_view["MD"], linewidth=1.1)
+                ax.set_title(col, fontsize=10)
+                ax.grid(True, alpha=0.35)
+        axes[0].invert_yaxis()
+        axes[0].set_ylabel("MD (m)")
+        st.pyplot(fig)
+        plt.close(fig)
+
+# ------------------------------------------
+# Tab 2: Dedicated Crossplot Tab
+# ------------------------------------------
+with tab_crossplot:
+    st.subheader(f"Crossplot — {selected_well}")
+    if len(num_all) >= 2 and len(w_df_view) > 0:
+        xp1, xp2, xp3 = st.columns(3)
+        x_ax = xp1.selectbox("X-Axis:", options=num_all, index=0, key="xp_x")
+        y_ax = xp2.selectbox("Y-Axis:", options=num_all, index=min(1, len(num_all) - 1), key="xp_y")
+        color_by = xp3.selectbox("Color By:", options=["None", "ELECTROFACIES"] + num_all, index=1 if "ELECTROFACIES" in num_all else 0, key="xp_c")
+
+        fig_xp, ax_xp = plt.subplots(figsize=(7, 5))
+        if color_by == "ELECTROFACIES" and w_df_view["ELECTROFACIES"].notna().any():
+            for f_id, grp in w_df_view.groupby("ELECTROFACIES"):
+                if pd.isna(f_id):
+                    continue
+                fid_int = int(f_id)
+                c_hex = st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)])
+                ax_xp.scatter(grp[x_ax], grp[y_ax], c=c_hex, label=f"EF-{fid_int}", s=18, alpha=0.85)
+            ax_xp.legend(fontsize=8)
+        elif color_by != "None" and color_by in w_df_view.columns:
+            sc = ax_xp.scatter(w_df_view[x_ax], w_df_view[y_ax], c=w_df_view[color_by], cmap="viridis", s=18, alpha=0.85)
+            plt.colorbar(sc, ax=ax_xp, label=color_by)
+        else:
+            ax_xp.scatter(w_df_view[x_ax], w_df_view[y_ax], s=18, alpha=0.85)
+
+        ax_xp.set_xlabel(x_ax)
+        ax_xp.set_ylabel(y_ax)
+        ax_xp.grid(True, alpha=0.3)
+        st.pyplot(fig_xp)
+        plt.close(fig_xp)
+
+# ------------------------------------------
+# Tab 3: Dedicated Statistical Plots (Histogram, Boxplot, CDF)
+# ------------------------------------------
+with tab_stats:
+    st.subheader(f"Statistical Distributions — {selected_well}")
+    if num_all and len(w_df_view) > 0:
+        st1, st2, st3 = st.columns(3)
+        stat_var = st1.selectbox("Variable:", options=num_all, key="st_var")
+        group_by_ef = st2.checkbox("Group by Electrofacies", value=("ELECTROFACIES" in w_df_view.columns and w_df_view["ELECTROFACIES"].notna().any()))
+        bins_n = st3.slider("Histogram Bins:", min_value=10, max_value=80, value=30)
+
+        p1, p2 = st.columns(2)
+        with p1:
+            st.markdown("**Histogram**")
+            fig_h, ax_h = plt.subplots(figsize=(6, 4))
+            if group_by_ef:
+                for f_id, grp in w_df_view.groupby("ELECTROFACIES"):
+                    if pd.isna(f_id):
+                        continue
+                    fid_int = int(f_id)
+                    c_hex = st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)])
+                    ax_h.hist(grp[stat_var].dropna(), bins=bins_n, alpha=0.55, color=c_hex, label=f"EF-{fid_int}")
+                ax_h.legend(fontsize=8)
+            else:
+                ax_h.hist(w_df_view[stat_var].dropna(), bins=bins_n, alpha=0.8)
+            ax_h.set_xlabel(stat_var)
+            ax_h.set_ylabel("Frequency")
+            ax_h.grid(True, alpha=0.3)
+            st.pyplot(fig_h)
+            plt.close(fig_h)
+
+        with p2:
+            st.markdown("**Boxplot**")
+            fig_b, ax_b = plt.subplots(figsize=(6, 4))
+            if group_by_ef:
+                groups = [grp[stat_var].dropna().values for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
+                g_labels = [f"EF-{int(_)}" for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
+                if groups:
+                    bp = ax_b.boxplot(groups, labels=g_labels, patch_artist=True)
+                    for patch, lbl in zip(bp["boxes"], g_labels):
+                        fid_int = int(lbl.split("-")[1])
+                        patch.set_facecolor(st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)]))
+                        patch.set_alpha(0.75)
+            else:
+                ax_b.boxplot(w_df_view[stat_var].dropna().values, labels=[stat_var], patch_artist=True)
+            ax_b.set_ylabel(stat_var)
+            ax_b.grid(True, alpha=0.3)
+            st.pyplot(fig_b)
+            plt.close(fig_b)
+
+# ------------------------------------------
+# Tab 4: Petrophysics, Stage 1 & Permeability (Stage 2)
 # ------------------------------------------
 with tab_petro:
-    st.subheader("Direct Petrophysical Evaluation (VSH, PHID, SW)")
+    st.subheader("Base Petrophysical Logs (VSH, PHID, SW)")
     c1, c2, c3, c4 = st.columns(4)
     rho_ma = c1.number_input("Matrix Density (g/cc):", value=2.65, step=0.01)
     rho_fl = c2.number_input("Fluid Density (g/cc):", value=1.00, step=0.05)
@@ -257,10 +485,9 @@ with tab_petro:
         st.success("Base petrophysical properties updated.")
 
     st.divider()
-    st.subheader("Stage 1: Missing Log & Washout Correction AI")
+    st.subheader("Stage 1: Missing Log & Washout AI")
     skip_s1 = {"MD", "WELL_NAME", "WASHOUT_FLAG", "TIGHT_FLAG", "PAY_FLAG", "RES_UNIT", "ELECTROFACIES"}
     avail_s1 = [c for c in mdf.columns if c not in skip_s1]
-
     s1_c1, s1_c2, s1_c3 = st.columns(3)
     target_log = s1_c1.selectbox("Target Log:", options=avail_s1)
     pred_opts = [c for c in avail_s1 if c != target_log]
@@ -314,41 +541,6 @@ with tab_petro:
 
     if st.session_state.ai_summary is not None:
         st.json(st.session_state.ai_summary)
-
-# ------------------------------------------
-# Tab 2: Electrofacies & Stage 2 Perm/Pay
-# ------------------------------------------
-with tab_facies:
-    st.subheader("Electrofacies Clustering (K-Means)")
-    num_all = [c for c in mdf.columns if pd.api.types.is_numeric_dtype(mdf[c]) and c != "MD"]
-    ef_def = [c for c in ["GR", "VSH", "PHID", "NPHI", "RHOB"] if c in num_all]
-    ef_c1, ef_c2, ef_c3 = st.columns([2, 1, 1])
-    ef_feats = ef_c1.multiselect("Electrofacies Input Curves:", options=num_all, default=ef_def)
-    n_clusters = ef_c2.number_input("Number of Electrofacies:", min_value=2, max_value=12, value=5, step=1)
-    with ef_c3:
-        st.write("")
-        st.write("")
-        run_ef_btn = st.button("Classify Electrofacies")
-
-    if run_ef_btn:
-        if len(ef_feats) < 1:
-            st.error("Select at least one numeric curve for electrofacies clustering.")
-        else:
-            valid_ef = mdf[ef_feats].notna().all(axis=1)
-            if valid_ef.sum() < int(n_clusters):
-                st.error("Not enough complete rows for the selected cluster count.")
-            else:
-                sc_ef = StandardScaler()
-                X_ef = sc_ef.fit_transform(mdf.loc[valid_ef, ef_feats])
-                km = KMeans(n_clusters=int(n_clusters), random_state=42, n_init=10)
-                mdf["ELECTROFACIES"] = np.nan
-                mdf.loc[valid_ef, "ELECTROFACIES"] = km.fit_predict(X_ef) + 1
-                st.session_state.master_df = mdf
-                st.session_state.ef_summary = mdf.groupby("ELECTROFACIES", dropna=True)[ef_feats].mean().round(4).to_dict(orient="index")
-                st.success("Electrofacies classification completed.")
-
-    if st.session_state.ef_summary is not None:
-        st.dataframe(pd.DataFrame.from_dict(st.session_state.ef_summary, orient="index"))
 
     st.divider()
     st.subheader("Stage 2: Core Permeability Prediction, Cutoffs & Reservoir Units")
@@ -457,44 +649,11 @@ with tab_facies:
         st.json(st.session_state.perm_summary)
 
 # ------------------------------------------
-# Tab 3: Log Plot, Crossplot & Export
+# Tab 5: Data & Export
 # ------------------------------------------
 with tab_export:
-    w_df_view = mdf[(mdf["WELL_NAME"] == selected_well) & (mdf["MD"] >= min_depth) & (mdf["MD"] <= max_depth)].sort_values("MD")
-    st.subheader(f"Well: {selected_well} | Formation: {formation_name}")
-
-    plot_cols = [c for c in ["GR", "VSH", "PHID", "SW", "PERM_AI", "ELECTROFACIES", "PAY_FLAG"] if c in w_df_view.columns and w_df_view[c].notna().any()]
-    if len(w_df_view) > 0 and plot_cols:
-        n_tr = len(plot_cols)
-        fig, axes = plt.subplots(1, n_tr, sharey=True, figsize=(max(6, n_tr * 2.6), 9))
-        if n_tr == 1:
-            axes = [axes]
-        for ax, col in zip(axes, plot_cols):
-            ax.plot(w_df_view[col], w_df_view["MD"], linewidth=1.1)
-            ax.set_title(col, fontsize=10)
-            ax.grid(True, alpha=0.35)
-        axes[0].invert_yaxis()
-        axes[0].set_ylabel("MD (m)")
-        st.pyplot(fig)
-        plt.close(fig)
-
-    xp_c1, xp_c2 = st.columns(2)
-    num_view = [c for c in w_df_view.columns if pd.api.types.is_numeric_dtype(w_df_view[c]) and c != "MD"]
-    if len(num_view) >= 2:
-        x_ax = xp_c1.selectbox("X-Axis:", options=num_view, index=0)
-        y_ax = xp_c2.selectbox("Y-Axis:", options=num_view, index=min(1, len(num_view) - 1))
-        fig_xp, ax_xp = plt.subplots(figsize=(6, 4))
-        c_vals = w_df_view["ELECTROFACIES"] if "ELECTROFACIES" in w_df_view.columns and w_df_view["ELECTROFACIES"].notna().any() else None
-        sc = ax_xp.scatter(w_df_view[x_ax], w_df_view[y_ax], c=c_vals, cmap="tab10", s=14, alpha=0.8)
-        ax_xp.set_xlabel(x_ax)
-        ax_xp.set_ylabel(y_ax)
-        ax_xp.grid(True, alpha=0.3)
-        if c_vals is not None:
-            plt.colorbar(sc, ax=ax_xp, label="ELECTROFACIES")
-        st.pyplot(fig_xp)
-        plt.close(fig_xp)
-
-    st.dataframe(w_df_view.head(200))
+    st.subheader(f"Interpreted Table & Export — {selected_well}")
+    st.dataframe(w_df_view.head(250))
     st.download_button(
         label="Download Interpreted Well CSV",
         data=w_df_view.to_csv(index=False).encode("utf-8"),
