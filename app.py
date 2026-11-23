@@ -448,7 +448,7 @@ with tab_stats:
                         patch.set_facecolor(st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)]))
                         patch.set_alpha(0.75)
             else:
-                ax_b.boxplot(w_df_view[stat_var].dropna().values, labels=[stat_var], patch_artist=True)
+                ax_b.boxplot(w_df_view[stat_var].dropna().values, tick_labels=[stat_var], patch_artist=True)
             ax_b.set_ylabel(stat_var)
             ax_b.grid(True, alpha=0.3)
             st.pyplot(fig_b)
