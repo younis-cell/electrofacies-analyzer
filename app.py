@@ -670,7 +670,7 @@ if "master_df" in st.session_state and st.session_state.master_df is not None:
         )
         _well = st.session_state.master_df["WELL_NAME"].iloc[0]
         render_data_overview(st.session_state.master_df, st.session_state.get("core_df"), _well)
-from ui_sections import (
+from ui_section import (
     render_crossplot_tab,
     render_electrofacies_tab,
     render_permeability_guide,
