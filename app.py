@@ -442,13 +442,13 @@ with tab_stats:
                 groups = [grp[stat_var].dropna().values for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
                 g_labels = [f"EF-{int(_)}" for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
                 if groups:
-                    bp = ax_b.boxplot(groups, tick_labels=g_labels, patch_artist=True)
+                    bp = ax_b.boxplot(groups, labels=g_labels, patch_artist=True)
                     for patch, lbl in zip(bp["boxes"], g_labels):
                         fid_int = int(lbl.split("-")[1])
                         patch.set_facecolor(st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)]))
                         patch.set_alpha(0.75)
             else:
-                ax_b.boxplot(w_df_view[stat_var].dropna().values, tick_labels=[stat_var], patch_artist=True)
+                ax_b.boxplot(w_df_view[stat_var].dropna().values, labels=[stat_var], patch_artist=True)
             ax_b.set_ylabel(stat_var)
             ax_b.grid(True, alpha=0.3)
             st.pyplot(fig_b)
@@ -660,3 +660,54 @@ with tab_export:
         file_name=f"{selected_well}_interpreted.csv",
         mime="text/csv",
     )
+from ui_sections import render_data_overview, render_quick_log_viewer, render_section_header
+
+if "master_df" in st.session_state and st.session_state.master_df is not None:
+    with st.expander("Quick Researcher Summary & Depth Check", expanded=False):
+        render_section_header(
+            "Researcher Quick Overview",
+            "Fast check of loaded wells, core coverage, and active depth interval.",
+        )
+        _well = st.session_state.master_df["WELL_NAME"].iloc[0]
+        render_data_overview(st.session_state.master_df, st.session_state.get("core_df"), _well)
+from ui_sections import (
+    render_crossplot_tab,
+    render_electrofacies_tab,
+    render_permeability_guide,
+    render_researcher_banner,
+    render_statistics_tab,
+)
+
+if "master_df" in st.session_state and st.session_state.master_df is not None:
+    _mdf = st.session_state.master_df
+    _cdf = st.session_state.get("core_df")
+    _well = st.session_state.get("ui_active_well", _mdf["WELL_NAME"].iloc[0])
+    _w_all = _mdf[_mdf["WELL_NAME"] == _well]
+    _d0 = float(_w_all["MD"].min()) if not _w_all["MD"].isna().all() else 0.0
+    _d1 = float(_w_all["MD"].max()) if not _w_all["MD"].isna().all() else 1000.0
+    _form = st.session_state.get("ui_formation", "Zubair Formation")
+
+    with st.expander("Modular Researcher Workspace (Electrofacies, Crossplot, Stats & Permeability Guide)", expanded=True):
+        _well = st.selectbox("Workspace Well:", options=_mdf["WELL_NAME"].unique().tolist(), key="ui_ws_well")
+        _w_sub = _mdf[_mdf["WELL_NAME"] == _well]
+        _w_min = float(_w_sub["MD"].min()) if not _w_sub["MD"].isna().all() else 0.0
+        _w_max = float(_w_sub["MD"].max()) if not _w_sub["MD"].isna().all() else 1000.0
+        rc1, rc2 = st.columns(2)
+        _top = rc1.number_input("Workspace Top (m):", value=_w_min, key="ui_ws_top")
+        _base = rc2.number_input("Workspace Base (m):", value=_w_max, key="ui_ws_base")
+        _w_view = _mdf[(_mdf["WELL_NAME"] == _well) & (_mdf["MD"] >= _top) & (_mdf["MD"] <= _base)].sort_values("MD")
+
+        render_researcher_banner(_mdf, _cdf, _well, _top, _base)
+        render_permeability_guide(_mdf, _cdf)
+
+        u_t1, u_t2, u_t3 = st.tabs([
+            "Electrofacies & Log Track",
+            "Crossplot",
+            "Histogram & Boxplot",
+        ])
+        with u_t1:
+            render_electrofacies_tab(_mdf, _w_view, _well, _form)
+        with u_t2:
+            render_crossplot_tab(_w_view, _well)
+        with u_t3:
+            render_statistics_tab(_w_view, _well)
