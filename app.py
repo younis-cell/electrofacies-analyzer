@@ -11,7 +11,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(page_title="Electrofacies & Petrophysical Suite", layout="wide")
-st.title("Electrofacies & Petrophysical Suite")
+st.title("Electrofacies & Petrophysical Suite - test")
 
 DEFAULT_FACIES_COLORS = [
     "#E63946",
