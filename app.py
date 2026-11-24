@@ -442,7 +442,7 @@ with tab_stats:
                 groups = [grp[stat_var].dropna().values for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
                 g_labels = [f"EF-{int(_)}" for _, grp in w_df_view.groupby("ELECTROFACIES") if not pd.isna(_)]
                 if groups:
-                    bp = ax_b.boxplot(groups, labels=g_labels, patch_artist=True)
+                    bp = ax_b.boxplot(groups, tick_labels=g_labels, patch_artist=True)
                     for patch, lbl in zip(bp["boxes"], g_labels):
                         fid_int = int(lbl.split("-")[1])
                         patch.set_facecolor(st.session_state.facies_colors.get(fid_int, DEFAULT_FACIES_COLORS[(fid_int - 1) % len(DEFAULT_FACIES_COLORS)]))
