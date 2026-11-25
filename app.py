@@ -368,4 +368,5 @@ with tab_logs:
         with st.expander("Facies Colors Customization", expanded=True):
             color_cols = st.columns(min(6, max(1, len(active_f_ids))))
             for i, f_id in enumerate(active_f_ids):
-                default_color = get_facies_color(facies_id, idx)
+                default_color = st.session_state.facies_colors.get(
+            f_id, DEFAULT_FACIES_COLORS[(int(f_id) - 1) % len(DEFAULT_FACIES_COLORS)]
